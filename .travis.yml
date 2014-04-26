@@ -1,0 +1,5 @@
+language: python
+python:
+  - "3.4"
+#install: PLEASE CHANGE ME
+script: python -m unittest discover -p *_test.py

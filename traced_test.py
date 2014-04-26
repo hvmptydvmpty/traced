@@ -115,7 +115,7 @@ class SingleGraphTest(unittest.TestCase):
             self.assertEqual(2, tr.Closure()('m'))
             self.assertEqual(5, tr.Closure()('h'))
 
-    @unittest.skip
+    @unittest.skip('TODO')
     def test_generator(self):
         with traced.Graph():
             tr = AssignmentPlus()
@@ -195,11 +195,115 @@ class FailureTest(unittest.TestCase):
     def test_override_in_eval(self):
         pass
 
+class NotificationSink(object):
+    count = 0
+
+    def __call__(self, instance, attr, new, old):
+        self.count += 1
+
 class SubscriptionTest(unittest.TestCase):
-    pass
+    def test_single_vertex_sub_unsub(self):
+        with traced.Graph():
+            tr = SingleInstanceDependency()
+
+            cb_count = 0
+            def on_change(instance, attr, new, old):
+                nonlocal cb_count
+                cb_count += 1
+
+            tr.Output.subscribe(on_change)
+            self.assertEqual(2, tr.Output())
+            self.assertEqual(1, cb_count)
+
+            tr.Input = 7
+            self.assertEqual(8, tr.Output())
+            self.assertEqual(2, cb_count)
+
+            # override without an actual change, no notification
+            self.Output = 8
+            self.assertEqual(2, cb_count)
+
+            # override with a different value, will notify
+            tr.Output = 15
+            self.assertEqual(3, cb_count)
+
+            # un-override doesn't result in a notification...
+            del tr.Input
+            del tr.Output
+            self.assertEqual(3, cb_count)
+
+            # ...but subsequent calc does
+            self.assertEqual(2, tr.Output())
+            self.assertEqual(4, cb_count)
+
+            tr.Output.unsubscribe(on_change)
+            tr.Output = -3
+            self.assertEqual(4, cb_count)
+
+    def test_subscribe_variety(self):
+        with traced.Graph():
+            tr1, tr2 = SingleInstanceDependency(), SingleInstanceDependency()
+
+            tr1_sink, tr2_sink, cell_sink, tr2_vertex_sink = [NotificationSink() for i in range(4)]
+            tr1.subscribe(tr1_sink)
+            tr2.subscribe(tr2_sink)
+            tr2.Output.subscribe(tr2_vertex_sink)
+            SingleInstanceDependency.Output.subscribe(cell_sink)
+
+            # override then eval downstream
+
+            tr1.Input = 4
+            self.assertEqual((1, 0), (tr1_sink.count, cell_sink.count))
+
+            self.assertEqual(5, tr1.Output())
+            self.assertEqual((2, 1), (tr1_sink.count, cell_sink.count))
+
+            # induce evaluation and change from None to something
+
+            self.assertEqual(2, tr2.Output())
+            self.assertEqual((2, 1, 2), (tr2_sink.count, tr2_vertex_sink.count, cell_sink.count))
+
+    def test_same_cb_one_call_per_vertex(self):
+        with traced.Graph():
+            tr = SingleInstanceDependency()
+
+            sink = NotificationSink()
+            SingleInstanceDependency.Input.subscribe(sink)
+            tr.subscribe(sink)
+            tr.Input.subscribe(sink)
+
+            self.assertEqual(1, tr.Input())
+            self.assertEqual(1, sink.count)
+
+    def test_assignment_subscription(self):
+        with traced.Graph():
+            tr = AssignmentPlus()
+            
+            called = False
+            def on_change(instance, name, new, old):
+                nonlocal called
+                called = True
+                self.assertIs(tr, instance)
+                self.assertIsNone(name)
+                self.assertEqual('abc', new)
+                self.assertIsNone(old)
+
+            tr.subscribe(on_change)
+            self.assertEqual('abc', tr.AbcByDefault())
+            self.assertTrue(called)
 
 class MultiGraphTest(unittest.TestCase):
-    pass
+    @unittest.skip('TODO')
+    def test_subgraph(self):
+        with traced.Graph() as g1:
+            diamond = Diamond(X = 20)
+
+            with traced.Graph() as g2:
+                diamond.X = -8
+                self.assertEqual(-20, diamond.Z())
+
+            self.assertEqual(50, diamond.Z())
 
 if '__main__' == __name__:
     logging.basicConfig(level = logging.DEBUG)
+    unittest.main()

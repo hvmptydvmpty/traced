@@ -169,10 +169,7 @@ class TraceableVertex(NotifierMixin):
             self.dependencies = None
             # if evaluation function is not actually a function use it as "default value"
             self.last_known = self.cell.evaluate(self.traceable) if callable(self.cell.evaluate) else self.cell.evaluate
-            if self.value != self.last_known:
-                NotifierMixin.notify_all([self, self.traceable, self.cell], self.traceable, self.last_known, self.value)
-
-            self.value = self.last_known
+            self.__assign(self.last_known)
             _log.debug('eval %s, dep(s): %d', self, len(self.dependencies) if self.dependencies else 0)
             return self.value
         finally:
@@ -181,26 +178,48 @@ class TraceableVertex(NotifierMixin):
     def __str__(self):
         return 'vertex {}.{} {}{} = {}'.format(
             self.traceable,
-            self.cell.evaluate.__name__ if callable(self.cell.evaluate) else '<anonymous>',
+            self.cell.name() or '<anonymous>',
             'over:' if self.overridden is not None else 'eval:' if self.evaluated is not None else '',
             self.defined(),
             self.value,
         )
 
+    def __assign(self, new_value):
+        ''' Do not call this directly!
+
+            Assigns the new value and if it's different from the old,
+            notifies all subscribers. The new value is assigned prior
+            to notification being sent so that if subscriber reads
+            this vertex it's already up to date.
+        '''
+        old_value = self.value
+        self.value = new_value
+        if new_value != old_value:
+            NotifierMixin.notify_all(
+                (self, self.traceable, self.cell),
+                self.traceable,
+                self.cell.name(),
+                new_value,
+                old_value,
+            )
+
     def override(self, value):
         self.touched = self.overridden = time.monotonic()
-        self.value = value
+        self.__assign(value)
 
     def remove_override(self):
         if self.overridden is not None:
             self.touched = time.monotonic()
             self.overridden = None
+            # don't issue a notification; "last known" may not be valid if dependencies have changed
             self.value = self.last_known
 
     def undefine(self):
         ''' Wipe out in case of an error. We only need to zero out `evaluated`
             and `overridden` to reset but undefine others to eliminate
             references and allow GC to work its magic.
+
+            Does not generate a notification.
         '''
         self.touched = time.monotonic()
         self.dependencies = self.evaluated = self.last_known = self.overridden = self.value = None
@@ -280,6 +299,7 @@ class Cell(NotifierMixin):
     def __init__(self, evaluate):
         if isinstance(evaluate, Cell):
             raise DefinitionError('Cell cannot decorate another Cell')
+
         self.evaluate = evaluate
 
     def __delete__(self, instance):
@@ -307,6 +327,9 @@ class Cell(NotifierMixin):
             self.properties[h] = vertex = TraceableVertex(self, instance)
 
         return vertex
+
+    def name(self):
+        return getattr(self.evaluate, '__name__', None)
 
 if '__main__' == __name__:
     logging.basicConfig(level = logging.INFO)

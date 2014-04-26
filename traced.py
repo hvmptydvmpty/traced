@@ -3,6 +3,10 @@ import itertools
 import logging
 import time
 
+__doc__ = '''
+core traced functionality
+'''
+
 _log = logging.getLogger(__name__)
 
 class GraphException(Exception):

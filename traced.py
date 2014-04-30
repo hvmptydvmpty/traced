@@ -2,6 +2,7 @@
 import itertools
 import logging
 import time
+import weakref
 
 __doc__ = '''
 core traced functionality
@@ -101,7 +102,7 @@ class NotifierMixin(object):
         '''
         # TODO weakref
         if self.callbacks is None:
-            self.callbacks = set()
+            self.callbacks = weakref.WeakSet()
 
         self.callbacks.add(callback)
 

@@ -209,6 +209,9 @@ class TraceableVertex(NotifierMixin):
             )
 
     def override(self, value):
+        if Graph.current().evaluation_stack:
+            raise DependencyException('Cell cannot override another Cell')
+
         self.touched = self.overridden = time.monotonic()
         self.__assign(value)
 

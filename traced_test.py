@@ -4,6 +4,10 @@ import unittest
 
 import traced
 
+__doc__ = '''
+core traced unit tests
+'''
+
 class SingleInstanceDependency(traced.Traceable):
     @traced.Cell
     def Input(self):
@@ -140,6 +144,14 @@ class Loop(traced.Traceable):
     def Third(self):
         return self.Second() + 10
 
+class Rogue(traced.Traceable):
+    SomeValue = traced.Cell('qwerty')
+
+    @traced.Cell
+    def AnotherValue(self):
+        self.SomeValue = 'asdf'
+        return 3
+
 class FailureTest(unittest.TestCase):
     def test_contextless(self):
         with self.assertRaises(traced.ContextException):
@@ -193,7 +205,9 @@ class FailureTest(unittest.TestCase):
             self.assertEqual(25, loop3.Second())
 
     def test_override_in_eval(self):
-        pass
+        with self.assertRaisesRegex(traced.DependencyException, 'override'):
+            with traced.Graph():
+                Rogue().AnotherValue()
 
 class NotificationSink(object):
     count = 0

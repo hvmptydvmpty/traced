@@ -205,7 +205,7 @@ class FailureTest(unittest.TestCase):
             self.assertEqual(25, loop3.Second())
 
     def test_override_in_eval(self):
-        with self.assertRaisesRegex(traced.DependencyException, 'override'):
+        with self.assertRaisesRegex(traced.DependencyException, 'AnotherValue.*override.*<anonymous>'):
             with traced.Graph():
                 Rogue().AnotherValue()
 

@@ -245,9 +245,9 @@ class TraceableVertex(NotifierMixin):
     def add_dependency(self, vertex):
         assert vertex is not None, 'Internal error, no vertex'
         if self.dependencies is None:
-            self.dependencies = []
+            self.dependencies = set()
 
-        self.dependencies.append(vertex)
+        self.dependencies.add(vertex)
 
     def is_newer(self, vertex):
         ''' Is this vertex "newer" than the other one.

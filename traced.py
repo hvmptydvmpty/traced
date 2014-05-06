@@ -152,7 +152,7 @@ class TraceableVertex(NotifierMixin):
 
     dependencies = None
     evaluated = None # time of last calc
-    last_known = None # last known evaluation result
+    last_known = None # last known evaluation result TODO optionally make it weak-referenced
     overridden = None # time of override or None if not overridden
     touched = None # time of last change, required to force-update downstream when override is removed
     value = None # current value; None is a valid value so never analyze contents for any tracing logic
@@ -170,14 +170,21 @@ class TraceableVertex(NotifierMixin):
             if not self.is_dirty():
                 return self.value
 
-            self.touched = self.evaluated = time.monotonic()
+            self.touched = time.monotonic()
             self.dependencies = None
             # if evaluation function is not actually a function use it as "default value"
             self.last_known = self.cell.evaluate(self.traceable) if callable(self.cell.evaluate) else self.cell.evaluate
+            # the code below would not execute on exception during evaluation
+            self.evaluated = self.touched
             self.__assign(self.last_known)
             _log.debug('eval %s, dep(s): %d', self, len(self.dependencies) if self.dependencies else 0)
             return self.value
         finally:
+            # TODO should _log.debug be here and report sys.exc_info()?
+            #import sys
+            #if sys.exc_info()[1]:
+            #    _log.exception('__call__')
+
             Graph.current().pop_vertex(self)
 
     def __str__(self):

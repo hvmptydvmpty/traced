@@ -144,6 +144,11 @@ class Loop(traced.Traceable):
     def Third(self):
         return self.Second() + 10
 
+class RogueError(Exception):
+    ''' Custom exception suitable for assertRaises to catch.
+    '''
+    pass
+
 class Rogue(traced.Traceable):
     SomeValue = traced.Cell('qwerty')
 
@@ -151,6 +156,17 @@ class Rogue(traced.Traceable):
     def AnotherValue(self):
         self.SomeValue = 'asdf'
         return 3
+
+    @traced.Cell
+    def Riser(self):
+        if 'qwerty' == self.SomeValue():
+            raise RogueError('Bad input')
+
+        return self.SomeValue().upper()
+
+    @traced.Cell
+    def ReverseRiser(self):
+        return self.Riser()[::-1]
 
 class FailureTest(unittest.TestCase):
     def test_contextless(self):
@@ -173,7 +189,21 @@ class FailureTest(unittest.TestCase):
                     pass
 
     def test_eval_exception(self):
-        pass
+        with traced.Graph():
+            rogue = Rogue(SomeValue = 'xyz')
+            self.assertEqual('XYZ', rogue.Riser())
+
+            del rogue.SomeValue
+            # should fail no matter how many times we call it
+            for i in range(2):
+                with self.assertRaises(RogueError):
+                    rogue.Riser()
+
+                with self.assertRaises(RogueError):
+                    rogue.ReverseRiser()
+
+            rogue.SomeValue = 'asdf'
+            self.assertEqual('FDSA', rogue.ReverseRiser())
 
     def test_forbidden_init(self):
         with self.assertRaisesRegex(traced.DefinitionError, '__init__ .* WithInit'):

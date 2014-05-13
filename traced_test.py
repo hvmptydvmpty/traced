@@ -337,7 +337,6 @@ class SubscriptionTest(unittest.TestCase):
             self.assertTrue(called)
 
 class MultiGraphTest(unittest.TestCase):
-    @unittest.skip('TODO')
     def test_subgraph(self):
         with traced.Graph() as g1:
             diamond = Diamond(X = 20)

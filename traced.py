@@ -39,9 +39,11 @@ class Graph(object):
     active_stack = [] # static usage
     parent = None
     evaluation_stack = None
+    vertices = None # (instance hash, attribute/cell hash) --> vertex
 
     def __init__(self):
         self.evaluation_stack = []
+        self.vertices = {}
         _log.debug('__init__: %s', self)
 
     def __enter__(self):
@@ -314,7 +316,6 @@ class Cell(NotifierMixin):
     '''
 
     evaluate = None
-    properties = None
 
     def __init__(self, evaluate):
         if isinstance(evaluate, Cell):
@@ -338,13 +339,11 @@ class Cell(NotifierMixin):
 
     def traceable_vertex(self, instance, create = True):
         assert isinstance(instance, Traceable)
-        h = hash(instance)
-        vertex = self.properties.get(h, None) if self.properties else None
+        cg = Graph.current()
+        key = hash(instance), hash(self)
+        vertex = cg.vertices.get(key)
         if create and vertex is None:
-            if self.properties is None:
-                self.properties = {}
-
-            self.properties[h] = vertex = TraceableVertex(self, instance)
+            cg.vertices[key] = vertex = TraceableVertex(self, instance)
 
         return vertex
 

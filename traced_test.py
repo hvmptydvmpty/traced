@@ -347,6 +347,13 @@ class MultiGraphTest(unittest.TestCase):
 
             self.assertEqual(50, diamond.Z())
 
+    def test_passthrough(self):
+        with traced.Graph() as g1:
+            tr = SingleInstanceDependency(Input = 100)
+
+            with traced.Graph() as g2:
+                self.assertEqual(101, tr.Output())
+
 if '__main__' == __name__:
     logging.basicConfig(level = logging.DEBUG)
     unittest.main()

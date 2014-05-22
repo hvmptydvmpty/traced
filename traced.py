@@ -62,40 +62,90 @@ class Graph(object):
         assert cg is self, 'Internal error, active graph mismatch'
         _log.info('deactivated %s', self)
 
+    def push_vertex(self, vertex):
+        assert vertex, 'Internal error, no vertex'
+        if self.evaluation_stack:
+            if vertex in self.evaluation_stack:
+                vertex.undefine()
+                raise LoopException(
+                    'Loop of length {} detected, attribute {} calls itself',
+                    self.evaluation_stack[::-1].index(vertex),
+                    vertex,
+                )
+
+            self.evaluation_stack[-1].add_dependency(vertex)
+
+        self.evaluation_stack.append(vertex)
+        _log.debug('start eval %s', vertex)
+
+    def pop_vertex(self, vertex):
+        assert vertex, 'Internal error, no vertex'
+        assert self.evaluation_stack, 'Internal error, evaluation stack empty'
+        v = self.evaluation_stack.pop()
+        assert v is vertex, 'Internal error, top vertex mismatch'
+        _log.debug('finish eval %s', vertex)
+
+    def traceable_vertex(self, instance, cell, mode):
+        ''' This retrieves a vertex for reading or writing. Read-only vertex
+            is the first one on the current graph or up its chain of
+            parents. Writeable vertex must be created on the current
+            graph if it doesn't exist. This follows Python semantics
+            of member access in a class: read will access a class
+            attribute if no instance-level one is found, but
+            modification will create a new instance attribute if
+            absent.
+
+            mode: delete/get/set
+        '''
+        key = hash(instance), hash(cell)
+        vertex = self.vertices.get(key)
+        if vertex is None:
+            if 's' == mode[0]:
+                self.vertices[key] = vertex = TraceableVertex(instance, cell)
+            else:
+                # for the other modes we need to search up
+                ancestor = self.parent
+                while ancestor is not None and vertex is None:
+                    vertex = ancestor.vertices.get(key)
+                    ancestor = ancestor.parent
+
+                if (vertex is not None and 'd' == mode[0]) or (vertex is None and 'g' == mode[0]):
+                    self.vertices[key] = vertex = TraceableVertex(instance, cell)
+
+        return vertex
+
+    def remove_override(self, traceable, cell):
+        assert isinstance(traceable, Traceable)
+        vertex = self.traceable_vertex(traceable, cell, 'd')
+        if vertex:
+            vertex.remove_override()
+
+    def read(self, traceable, cell):
+        assert isinstance(traceable, Traceable)
+        return self.traceable_vertex(traceable, cell, 'g')
+
+    def override(self, traceable, cell, value):
+        ''' Check that target `cell` is not being overridden inside another
+            cell's evaluation function, find/create the vertex and
+            override it.
+        '''
+        assert isinstance(traceable, Traceable)
+        if not self.evaluation_stack:
+            self.traceable_vertex(traceable, cell, 's').override(value)
+        else:
+            # currently evaluated cell definitely has a name because it can call other cells (like the target one)
+            raise DependencyException('Cell {} cannot override another Cell {}'.format(
+                self.evaluation_stack[-1].cell.name(),
+                cell.name() or '<anonymous>'
+            ))
+
     @classmethod
     def current(clazz):
         if not clazz.active_stack:
             raise ContextException('Must be computed in the context of a graph, please activate one first')
 
         return clazz.active_stack[-1]
-
-    @classmethod
-    def push_vertex(clazz, vertex):
-        assert vertex, 'Internal error, no vertex'
-        cg = clazz.current()
-        if cg.evaluation_stack:
-            if vertex in cg.evaluation_stack:
-                vertex.undefine()
-                raise LoopException(
-                    'Loop of length {} detected, attribute {} calls itself',
-                    cg.evaluation_stack[::-1].index(vertex),
-                    vertex,
-                )
-
-            cg.evaluation_stack[-1].add_dependency(vertex)
-
-        cg.evaluation_stack.append(vertex)
-        _log.debug('start eval %s', vertex)
-
-    @classmethod
-    def pop_vertex(clazz, vertex):
-        assert vertex, 'Internal error, no vertex'
-        cg = clazz.current()
-        assert cg.evaluation_stack, 'Internal error, evaluation stack empty'
-        v = cg.evaluation_stack.pop()
-        assert v is vertex, 'Internal error, top vertex mismatch'
-        _log.debug('finish eval %s', vertex)
-
+            
 class NotifierMixin(object):
     callbacks = None
 
@@ -159,7 +209,7 @@ class TraceableVertex(NotifierMixin):
     touched = None # time of last change, required to force-update downstream when override is removed
     value = None # current value; None is a valid value so never analyze contents for any tracing logic
 
-    def __init__(self, cell, traceable):
+    def __init__(self, traceable, cell):
         self.cell = cell
         self.traceable = traceable
         _log.debug('__init__: %s', self)
@@ -218,14 +268,7 @@ class TraceableVertex(NotifierMixin):
             )
 
     def override(self, value):
-        cg = Graph.current()
-        if cg.evaluation_stack:
-            # currently evaluated cell definitely has a name because it can call other cells like this one
-            raise DependencyException('Cell {} cannot override another Cell {}'.format(
-                cg.evaluation_stack[-1].cell.name(),
-                self.cell.name() or '<anonymous>'
-            ))
-
+        # not checking for validity here, see Cell.__set__
         self.touched = self.overridden = time.monotonic()
         self.__assign(value)
 
@@ -324,28 +367,15 @@ class Cell(NotifierMixin):
         self.evaluate = evaluate
 
     def __delete__(self, instance):
-        assert isinstance(instance, Traceable)
-        vertex = self.traceable_vertex(instance, False)
-        if vertex:
-            vertex.remove_override()
+        Graph.current().remove_override(instance, self)
 
     def __get__(self, instance, typ = None):
         assert typ is None or issubclass(typ, Traceable), 'Invalid type {}'.format(typ)
         # without an instance, return something equivalent to unbound method
-        return self if instance is None else self.traceable_vertex(instance)
+        return self if instance is None else Graph.current().read(instance, self)
 
     def __set__(self, instance, value):
-        self.traceable_vertex(instance).override(value)
-
-    def traceable_vertex(self, instance, create = True):
-        assert isinstance(instance, Traceable)
-        cg = Graph.current()
-        key = hash(instance), hash(self)
-        vertex = cg.vertices.get(key)
-        if create and vertex is None:
-            cg.vertices[key] = vertex = TraceableVertex(self, instance)
-
-        return vertex
+        Graph.current().override(instance, self, value)
 
     def name(self):
         return getattr(self.evaluate, '__name__', None)

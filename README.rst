@@ -7,7 +7,7 @@ Naive lazy dependency graph (`DAG <http://en.wikipedia.org/wiki/Directed_acyclic
 
 |build_status| |project_badge|
 
-.. |build_status| image:: https://travis-ci.org/hvmptydvmpty/traced.png?branch=master
+.. |build_status| image:: https://travis-ci.org/hvmptydvmpty/traced.svg?branch=master
     :target: https://travis-ci.org/hvmptydvmpty/traced
     :alt: Travis-CI Build Status Badge
 

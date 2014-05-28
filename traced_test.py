@@ -354,6 +354,15 @@ class MultiGraphTest(unittest.TestCase):
             with traced.Graph() as g2:
                 self.assertEqual(101, tr.Output())
 
+    def test_override(self):
+        with traced.Graph() as g1:
+            tr = SingleInstanceDependency(Input = 4)
+            self.assertEqual(5, tr.Output())
+
+            with traced.Graph() as g2:
+                del tr.Input
+                self.assertEqual(2, tr.Output())
+
 if '__main__' == __name__:
     logging.basicConfig(level = logging.DEBUG)
     unittest.main()

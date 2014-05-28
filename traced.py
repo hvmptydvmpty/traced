@@ -39,7 +39,7 @@ class Graph(object):
     active_stack = [] # static usage
     parent = None
     evaluation_stack = None
-    vertices = None # (instance hash, attribute/cell hash) --> vertex
+    vertices = None # vertex map
 
     def __init__(self):
         self.evaluation_stack = []
@@ -65,15 +65,15 @@ class Graph(object):
     def push_vertex(self, vertex):
         assert vertex, 'Internal error, no vertex'
         if self.evaluation_stack:
-            if vertex in self.evaluation_stack:
+            if vertex not in self.evaluation_stack:
+                self.evaluation_stack[-1].add_dependency(vertex.key())
+            else:
                 vertex.undefine()
                 raise LoopException(
                     'Loop of length {} detected, attribute {} calls itself',
                     self.evaluation_stack[::-1].index(vertex),
                     vertex,
                 )
-
-            self.evaluation_stack[-1].add_dependency(vertex)
 
         self.evaluation_stack.append(vertex)
         _log.debug('start eval %s', vertex)
@@ -85,7 +85,7 @@ class Graph(object):
         assert v is vertex, 'Internal error, top vertex mismatch'
         _log.debug('finish eval %s', vertex)
 
-    def traceable_vertex(self, instance, cell, mode):
+    def traceable_vertex(self, instance, cell, mode, key = None):
         ''' This retrieves a vertex for reading or writing. Read-only vertex
             is the first one on the current graph or up its chain of
             parents. Writeable vertex must be created on the current
@@ -95,21 +95,28 @@ class Graph(object):
             modification will create a new instance attribute if
             absent.
 
-            mode: delete/get/set
+            mode: delete/get/set/trace
         '''
-        key = hash(instance), hash(cell)
+        mode = mode[0]
+        assert mode in 'dgst', 'invalid mode ' + mode
+        if key is None:
+            key = TraceableVertex.graph_key(instance, cell)
+
         vertex = self.vertices.get(key)
         if vertex is None:
-            if 's' == mode[0]:
+            if 's' == mode:
+                # override always creates a new vertex on graph
                 self.vertices[key] = vertex = TraceableVertex(instance, cell)
             else:
-                # for the other modes we need to search up
+                # for the other modes (d/g/t) we need to search up
                 ancestor = self.parent
                 while ancestor is not None and vertex is None:
                     vertex = ancestor.vertices.get(key)
                     ancestor = ancestor.parent
 
-                if (vertex is not None and 'd' == mode[0]) or (vertex is None and 'g' == mode[0]):
+                # new vertex is created if it's computed for the first
+                # time or if an override on a higher graph is removed
+                if (vertex is None and 'g' == mode) or (vertex is not None and vertex.is_override() and 'd' == mode):
                     self.vertices[key] = vertex = TraceableVertex(instance, cell)
 
         return vertex
@@ -138,6 +145,17 @@ class Graph(object):
                 self.evaluation_stack[-1].cell.name(),
                 cell.name() or '<anonymous>'
             ))
+
+    def vertex_stale(self, vertex):
+        ''' `True` if at least one dependency of specified vertex is newer, `False` otherwise.
+        '''
+        if vertex.dependency_keys:
+            for key in vertex.dependency_keys:
+                dependency = self.traceable_vertex(None, None, 't', key)
+                if dependency is None or dependency.is_newer(vertex):
+                    return True
+
+        return False
 
     @classmethod
     def current(clazz):
@@ -202,7 +220,7 @@ class TraceableVertex(NotifierMixin):
     traceable = None # the instance
     cell = None # a specific attribute on the instance
 
-    dependencies = None
+    dependency_keys = None
     evaluated = None # time of last calc
     last_known = None # last known evaluation result TODO optionally make it weak-referenced
     overridden = None # time of override or None if not overridden
@@ -223,13 +241,13 @@ class TraceableVertex(NotifierMixin):
                 return self.value
 
             self.touched = time.monotonic()
-            self.dependencies = None
+            self.dependency_keys = None
             # if evaluation function is not actually a function use it as "default value"
             self.last_known = self.cell.evaluate(self.traceable) if callable(self.cell.evaluate) else self.cell.evaluate
             # the code below would not execute on exception during evaluation
             self.evaluated = self.touched
             self.__assign(self.last_known)
-            _log.debug('eval %s, dep(s): %d', self, len(self.dependencies) if self.dependencies else 0)
+            _log.debug('eval %s, dep(s): %d', self, len(self.dependency_keys) if self.dependency_keys else 0)
             return self.value
         finally:
             # TODO should _log.debug be here and report sys.exc_info()?
@@ -279,6 +297,11 @@ class TraceableVertex(NotifierMixin):
             # don't issue a notification; "last known" may not be valid if dependencies have changed
             self.value = self.last_known
 
+    def is_override(self):
+        ''' `True` if vertex is overridden, otherwise `False`. API for outside consumption.
+        '''
+        return self.overridden is not None
+
     def undefine(self):
         ''' Wipe out in case of an error. We only need to zero out `evaluated`
             and `overridden` to reset but undefine others to eliminate
@@ -287,19 +310,19 @@ class TraceableVertex(NotifierMixin):
             Does not generate a notification.
         '''
         self.touched = time.monotonic()
-        self.dependencies = self.evaluated = self.last_known = self.overridden = self.value = None
+        self.dependency_keys = self.evaluated = self.last_known = self.overridden = self.value = None
 
     def defined(self):
         ''' Time when the current value was set or `None`.
         '''
         return self.overridden or self.evaluated
 
-    def add_dependency(self, vertex):
-        assert vertex is not None, 'Internal error, no vertex'
-        if self.dependencies is None:
-            self.dependencies = set()
+    def add_dependency(self, vertex_key):
+        assert vertex_key is not None, 'Internal error, no vertex'
+        if self.dependency_keys is None:
+            self.dependency_keys = set()
 
-        self.dependencies.add(vertex)
+        self.dependency_keys.add(vertex_key)
 
     def is_newer(self, vertex):
         ''' Is this vertex "newer" than the other one.
@@ -307,22 +330,26 @@ class TraceableVertex(NotifierMixin):
         '''
         return self.is_dirty() or vertex.defined() < self.touched
 
-    def dirty_dependencies(self):
-        ''' Generator of "dirty" dependency vertices. Makes it easy for
-            `clean` to return as soon as at least one "dirty"
-            dependency is found.
-        '''
-        return (vertex for vertex in self.dependencies or [] if vertex.is_newer(self))
-
     def is_dirty(self):
         ''' Returns `True` if the vertex must be evaluated. Overridden vertex
             is clean by definition because it's defined and has no
             dependencies. A vertex that is not overridden is clean if
             it's been evaluated and there are no "dirty" dependencies.
         '''
-        result = self.overridden is None and (self.evaluated is None or any(self.dirty_dependencies()))
+        result = self.overridden is None and (self.evaluated is None or Graph.current().vertex_stale(self))
         _log.debug('%s %s', 'dirty' if result else 'clean', self)
         return result
+
+    def key(self):
+        '''Identifies vertex on graph. Must match `graph_key`.
+        '''
+        return hash(self.traceable), hash(self.cell)
+
+    @classmethod
+    def graph_key(clazz, traceable, cell):
+        '''Derives vertex key from traceable object and a cell. Must match `key`.
+        '''
+        return hash(traceable), hash(cell)
 
 class Cell(NotifierMixin):
     ''' This is a descriptor for traceable object's cells. Value of a
@@ -382,3 +409,4 @@ class Cell(NotifierMixin):
 
 if '__main__' == __name__:
     logging.basicConfig(level = logging.INFO)
+

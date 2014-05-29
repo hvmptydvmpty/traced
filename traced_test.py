@@ -55,6 +55,10 @@ class AssignmentPlus(traced.Traceable):
         return lambda key: m.get(key, None)
 
     @traced.Cell
+    def ClosureWithDependency(self):
+        return lambda index: self.AbcByDefault()[index]
+
+    @traced.Cell
     def Generator(self):
         index = 0
         while True:
@@ -119,7 +123,13 @@ class SingleGraphTest(unittest.TestCase):
             self.assertEqual(2, tr.Closure()('m'))
             self.assertEqual(5, tr.Closure()('h'))
 
-    @unittest.skip('TODO')
+    def test_closure_with_dependency(self):
+        with traced.Graph():
+            tr = AssignmentPlus()
+            self.assertEqual('c', tr.ClosureWithDependency()(2))
+            tr.AbcByDefault = 'fgh'
+            self.assertEqual('g', tr.ClosureWithDependency()(1))
+
     def test_generator(self):
         with traced.Graph():
             tr = AssignmentPlus()
@@ -130,6 +140,16 @@ class SingleGraphTest(unittest.TestCase):
 
             tr.AbcByDefault = 'wxyz'
             self.assertEqual('w', next(tr.Generator()))
+
+    def test_generator_override(self):
+        with traced.Graph():
+            tr = AssignmentPlus()
+            tr.Generator = (chr(x) for x in range(65, 75))
+            self.assertEqual('A', next(tr.Generator()))
+            self.assertEqual('B', next(tr.Generator()))
+
+            del tr.Generator
+            self.assertEqual('a', next(tr.Generator()))
 
 class Loop(traced.Traceable):
     @traced.Cell

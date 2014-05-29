@@ -1,4 +1,5 @@
 #!/usr/bin/env python3 -I
+import inspect
 import itertools
 import logging
 import time
@@ -149,6 +150,7 @@ class Graph(object):
     def vertex_stale(self, vertex):
         ''' `True` if at least one dependency of specified vertex is newer, `False` otherwise.
         '''
+        # TODO this shows TraceableVertex is not an independent entity
         if vertex.dependency_keys:
             for key in vertex.dependency_keys:
                 dependency = self.traceable_vertex(None, None, 't', key)
@@ -216,6 +218,67 @@ class Traceable(NotifierMixin, metaclass = MetaTraceable):
         if missing:
             raise DefinitionError('Attribute(s) {} not found'.format(', '.join(sorted(missing))))
 
+class TraceableWrapper(object):
+    ''' Base class for dependency tracking on callable/generator values.
+    '''
+    graph = None
+    vertex = None
+    valid = True
+
+    def __init__(self, graph, vertex):
+        self.graph = graph
+        self.vertex = vertex
+
+    def wrap(self, f, *args):
+        try:
+            if self.valid:
+                self.graph.push_vertex(self.vertex)
+
+            return f(*args)
+        finally:
+            if self.valid:
+                self.graph.pop_vertex(self.vertex)
+
+class TraceableClosure(TraceableWrapper):
+    ''' Function/closure wrapper that records dependencies.
+    '''
+    func = None
+
+    def __init__(self, graph, vertex, func):
+        super().__init__(graph, vertex)
+        self.func = func
+        _log.debug('__init__: closure %s, %s', graph, vertex)
+
+    def __call__(self, *args, **kw):
+        return self.wrap(self.func, *args, **kw)
+
+class TraceableGenerator(TraceableWrapper):
+    ''' Generator wrapper that records dependencies.
+    '''
+    gen = None
+
+    def __init__(self, graph, vertex, gen):
+        super().__init__(graph, vertex)
+        self.gen = gen
+        _log.debug('__init__: generator %s, %s', graph, vertex)
+    
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.wrap(self.gen.__next__)
+
+    def send(self, value):
+        return self.wrap(self.gen.send, value)
+
+    def throw(self, *args):
+        # TODO working example?
+        return self.wrap(self.gen.throw, *args)
+
+    def close(self):
+        self.valid = False
+        self.gen.close()
+
 class TraceableVertex(NotifierMixin):
     traceable = None # the instance
     cell = None # a specific attribute on the instance
@@ -224,7 +287,15 @@ class TraceableVertex(NotifierMixin):
     evaluated = None # time of last calc
     last_known = None # last known evaluation result TODO optionally make it weak-referenced
     overridden = None # time of override or None if not overridden
-    touched = None # time of last change, required to force-update downstream when override is removed
+
+    ''' Time of last change. Guaranteed to be the same or later than
+        either `evaluated` or `overridden`. Required to (a)
+        force-update downstream when override is removed or (b)
+        reflect addition of dynamic dependencies for generators or
+        closures.
+    '''
+    touched = None
+
     value = None # current value; None is a valid value so never analyze contents for any tracing logic
 
     def __init__(self, traceable, cell):
@@ -234,7 +305,8 @@ class TraceableVertex(NotifierMixin):
 
     def __call__(self):
         assert self.traceable is not None
-        Graph.current().push_vertex(self)
+        cg = Graph.current()
+        cg.push_vertex(self)
         try:
             # overridden or no changes
             if not self.is_dirty():
@@ -244,6 +316,14 @@ class TraceableVertex(NotifierMixin):
             self.dependency_keys = None
             # if evaluation function is not actually a function use it as "default value"
             self.last_known = self.cell.evaluate(self.traceable) if callable(self.cell.evaluate) else self.cell.evaluate
+            # generator must be wrapped to populate dependencies as its __next__ or other methods are called
+            if inspect.isgenerator(self.last_known):
+                # assume previous value, if present, was a generator too
+                if self.value is not None: self.value.close()
+                self.last_known = TraceableGenerator(cg, self, self.last_known)
+            elif callable(self.last_known):
+                self.last_known = TraceableClosure(cg, self, self.last_known)
+
             # the code below would not execute on exception during evaluation
             self.evaluated = self.touched
             self.__assign(self.last_known)
@@ -255,7 +335,7 @@ class TraceableVertex(NotifierMixin):
             #if sys.exc_info()[1]:
             #    _log.exception('__call__')
 
-            Graph.current().pop_vertex(self)
+            cg.pop_vertex(self)
 
     def __str__(self):
         return 'vertex {}.{} {}{} = {}'.format(
@@ -321,7 +401,10 @@ class TraceableVertex(NotifierMixin):
         assert vertex_key is not None, 'Internal error, no vertex'
         if self.dependency_keys is None:
             self.dependency_keys = set()
+        elif vertex_key in self.dependency_keys:
+            return
 
+        self.touched = time.monotonic()
         self.dependency_keys.add(vertex_key)
 
     def is_newer(self, vertex):
@@ -409,4 +492,3 @@ class Cell(NotifierMixin):
 
 if '__main__' == __name__:
     logging.basicConfig(level = logging.INFO)
-

@@ -37,10 +37,11 @@ class LoopException(DependencyException):
     pass
 
 class Graph(object):
-    active_stack = [] # static usage
+    active_stack = [] # NB: static usage!
     parent = None
     evaluation_stack = None
     vertices = None # vertex map
+    indent = ''
 
     def __init__(self):
         self.evaluation_stack = []
@@ -77,14 +78,16 @@ class Graph(object):
                 )
 
         self.evaluation_stack.append(vertex)
-        _log.debug('start eval %s', vertex)
+        self.indent += '  '
+        _log.debug('%sstart eval %s', self.indent, vertex)
 
     def pop_vertex(self, vertex):
         assert vertex, 'Internal error, no vertex'
         assert self.evaluation_stack, 'Internal error, evaluation stack empty'
         v = self.evaluation_stack.pop()
         assert v is vertex, 'Internal error, top vertex mismatch'
-        _log.debug('finish eval %s', vertex)
+        self.indent = self.indent[:-2]
+        _log.debug('%sfinish eval %s', self.indent, vertex)
 
     def traceable_vertex(self, instance, cell, mode, key = None):
         ''' This retrieves a vertex for reading or writing. Read-only vertex
@@ -229,12 +232,12 @@ class TraceableWrapper(object):
         self.graph = graph
         self.vertex = vertex
 
-    def wrap(self, f, *args):
+    def wrap(self, f, *args, **kwargs):
         try:
             if self.valid:
                 self.graph.push_vertex(self.vertex)
 
-            return f(*args)
+            return f(*args, **kwargs)
         finally:
             if self.valid:
                 self.graph.pop_vertex(self.vertex)
@@ -249,8 +252,8 @@ class TraceableClosure(TraceableWrapper):
         self.func = func
         _log.debug('__init__: closure %s, %s', graph, vertex)
 
-    def __call__(self, *args, **kw):
-        return self.wrap(self.func, *args, **kw)
+    def __call__(self, *args, **kwargs):
+        return self.wrap(self.func, *args, **kwargs)
 
 class TraceableGenerator(TraceableWrapper):
     ''' Generator wrapper that records dependencies.
@@ -280,6 +283,14 @@ class TraceableGenerator(TraceableWrapper):
         self.gen.close()
 
 class TraceableVertex(NotifierMixin):
+    ''' A descriptor accessed via traceable node attribute.
+
+        :member:`touched` is the time of last change. Guaranteed to be
+        the same or later than either `evaluated` or
+        `overridden`. Required to (a) force-update downstream when
+        override is removed or (b) reflect addition of dynamic
+        dependencies for generators or closures.
+    '''
     traceable = None # the instance
     cell = None # a specific attribute on the instance
 
@@ -288,12 +299,6 @@ class TraceableVertex(NotifierMixin):
     last_known = None # last known evaluation result TODO optionally make it weak-referenced
     overridden = None # time of override or None if not overridden
 
-    ''' Time of last change. Guaranteed to be the same or later than
-        either `evaluated` or `overridden`. Required to (a)
-        force-update downstream when override is removed or (b)
-        reflect addition of dynamic dependencies for generators or
-        closures.
-    '''
     touched = None
 
     value = None # current value; None is a valid value so never analyze contents for any tracing logic
@@ -304,6 +309,8 @@ class TraceableVertex(NotifierMixin):
         _log.debug('__init__: %s', self)
 
     def __call__(self):
+        ''' Call on the traceable node ends up here.
+        '''
         assert self.traceable is not None
         cg = Graph.current()
         cg.push_vertex(self)
@@ -316,6 +323,7 @@ class TraceableVertex(NotifierMixin):
             self.dependency_keys = None
             # if evaluation function is not actually a function use it as "default value"
             self.last_known = self.cell.evaluate(self.traceable) if callable(self.cell.evaluate) else self.cell.evaluate
+
             # generator must be wrapped to populate dependencies as its __next__ or other methods are called
             if inspect.isgenerator(self.last_known):
                 # assume previous value, if present, was a generator too
@@ -327,7 +335,7 @@ class TraceableVertex(NotifierMixin):
             # the code below would not execute on exception during evaluation
             self.evaluated = self.touched
             self.__assign(self.last_known)
-            _log.debug('eval %s, dep(s): %d', self, len(self.dependency_keys) if self.dependency_keys else 0)
+            _log.debug('%seval %s, dep(s): %d', cg.indent, self, len(self.dependency_keys) if self.dependency_keys else 0)
             return self.value
         finally:
             # TODO should _log.debug be here and report sys.exc_info()?
@@ -420,7 +428,7 @@ class TraceableVertex(NotifierMixin):
             it's been evaluated and there are no "dirty" dependencies.
         '''
         result = self.overridden is None and (self.evaluated is None or Graph.current().vertex_stale(self))
-        _log.debug('%s %s', 'dirty' if result else 'clean', self)
+        _log.debug('%s%s %s', Graph.current().indent, 'dirty' if result else 'clean', self)
         return result
 
     def key(self):

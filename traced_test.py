@@ -1,12 +1,11 @@
 #!/usr/bin/env python3 -I
+''' core traced unit tests
+'''
+
 import logging
 import unittest
 
 import traced
-
-__doc__ = '''
-core traced unit tests
-'''
 
 class SingleInstanceDependency(traced.Traceable):
     @traced.Cell

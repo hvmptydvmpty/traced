@@ -1,13 +1,12 @@
 #!/usr/bin/env python3 -I
+''' core traced functionality
+'''
+
 import inspect
 import itertools
 import logging
 import time
 import weakref
-
-__doc__ = '''
-core traced functionality
-'''
 
 _log = logging.getLogger(__name__)
 
